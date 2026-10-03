@@ -110,10 +110,18 @@ class LoqedDataCoordinator(DataUpdateCoordinator[StatusMessage]):
 
         _LOGGER.debug("Callback body: %s", body)
 
+        was_online = self.lock.online
         event_data = await self.lock.receiveWebhook(body, received_hash, received_ts)
         if "error" in event_data:
             _LOGGER.warning("Incorrect callback received:: %s", event_data)
             return None
+
+        if self.lock.online != was_online:
+            _LOGGER.info(
+                "LOQED lock %s is %s",
+                self.device_name,
+                "online again" if self.lock.online else "offline",
+            )
 
         self.async_update_listeners()
         return None

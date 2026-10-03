@@ -2,6 +2,7 @@
 
 from datetime import timedelta
 from http import HTTPStatus
+import logging
 from typing import Any
 from unittest.mock import AsyncMock, call, patch
 
@@ -106,6 +107,74 @@ async def test_webhook_ignores_rejected_message(
     state = hass.states.get("lock.home")
     assert state
     assert state.state == LockState.UNLOCKED
+
+
+@pytest.mark.parametrize(
+    ("online_before", "online_after", "expected_log"),
+    [
+        pytest.param(True, False, "LOQED lock Home is offline", id="goes_offline"),
+        pytest.param(False, True, "LOQED lock Home is online again", id="comes_back"),
+    ],
+)
+async def test_webhook_logs_online_state_change(
+    hass: HomeAssistant,
+    hass_client_no_auth: ClientSessionGenerator,
+    integration: MockConfigEntry,
+    lock: loqed.Lock,
+    caplog: pytest.LogCaptureFixture,
+    online_before: bool,
+    online_after: bool,
+    expected_log: str,
+) -> None:
+    """Test a change in the lock's online state is logged once."""
+    await async_setup_component(hass, "http", {"http": {}})
+    client = await hass_client_no_auth()
+    processed_message = await async_load_json_object_fixture(
+        hass, "lock_going_to_nightlock.json", DOMAIN
+    )
+
+    async def receive_webhook(*args: Any) -> dict[str, Any]:
+        lock.online = online_after
+        return processed_message
+
+    lock.online = online_before
+    lock.receiveWebhook = AsyncMock(side_effect=receive_webhook)
+    message = await async_load_fixture(hass, "battery_update.json", DOMAIN)
+
+    with caplog.at_level(logging.INFO):
+        await client.post(
+            f"/api/webhook/{integration.data[CONF_WEBHOOK_ID]}",
+            data=message,
+            headers={"timestamp": "1653304609", "hash": "incorrect hash"},
+        )
+
+    assert caplog.text.count(expected_log) == 1
+
+
+async def test_webhook_does_not_log_unchanged_online_state(
+    hass: HomeAssistant,
+    hass_client_no_auth: ClientSessionGenerator,
+    integration: MockConfigEntry,
+    lock: loqed.Lock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Test a webhook that leaves the online state alone logs nothing about it."""
+    await async_setup_component(hass, "http", {"http": {}})
+    client = await hass_client_no_auth()
+    processed_message = await async_load_json_object_fixture(
+        hass, "lock_going_to_nightlock.json", DOMAIN
+    )
+    lock.receiveWebhook = AsyncMock(return_value=processed_message)
+    message = await async_load_fixture(hass, "battery_update.json", DOMAIN)
+
+    with caplog.at_level(logging.INFO):
+        await client.post(
+            f"/api/webhook/{integration.data[CONF_WEBHOOK_ID]}",
+            data=message,
+            headers={"timestamp": "1653304609", "hash": "incorrect hash"},
+        )
+
+    assert "LOQED lock Home is" not in caplog.text
 
 
 async def test_setup_webhook_in_bridge(
